@@ -85,7 +85,7 @@ export default async function handler(req, res) {
         body: JSON.stringify({
           systemInstruction: { parts: [{ text: PROMPTS[moduleKey] }] },
           contents,
-          generationConfig: { temperature: 0.3, maxOutputTokens: 800 },
+          generationConfig: { temperature: 0.3, maxOutputTokens: 2048, thinkingConfig: { thinkingBudget: 0 } },
         }),
       }
     );
@@ -97,6 +97,9 @@ export default async function handler(req, res) {
     }
 
     const answer = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("").trim();
+    if (data?.candidates?.[0]?.finishReason === "MAX_TOKENS") {
+      console.error("Answer cut at token limit");
+    }
     if (!answer) {
       return sendJson(res, 502, { error: "No answer returned. Try rephrasing." });
     }
