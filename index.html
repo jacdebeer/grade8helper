@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Economy Study Helper</title>
+<style>
+  :root { --bg:#f4f6f8; --card:#ffffff; --ink:#0b1f2c; --muted:#5b6b78; --primary:#002e47; --accent:#1d6b99; --user:#e6f0f6; }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg:#0b1620; --card:#132431; --ink:#e8eef3; --muted:#9fb2bf; --primary:#7cc4ea; --accent:#4aa3d6; --user:#1d3a4d; }
+  }
+  :root[data-theme="dark"] { --bg:#0b1620; --card:#132431; --ink:#e8eef3; --muted:#9fb2bf; --primary:#7cc4ea; --accent:#4aa3d6; --user:#1d3a4d; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:16px; display:flex; flex-direction:column; min-height:100vh; box-sizing:border-box; }
+  h1 { font-size:1.2rem; color:var(--primary); margin:8px 0 4px; }
+  .sub { color:var(--muted); font-size:.9rem; margin:0 0 12px; }
+  #log { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding-bottom:12px; }
+  .msg { padding:10px 12px; border-radius:10px; line-height:1.5; white-space:pre-wrap; max-width:92%; }
+  .bot { background:var(--card); align-self:flex-start; }
+  .me { background:var(--user); align-self:flex-end; }
+  .err { color:#b42318; }
+  form { display:flex; gap:8px; position:sticky; bottom:0; background:var(--bg); padding-top:8px; }
+  textarea { flex:1; resize:none; font:inherit; padding:10px; border-radius:10px; border:1px solid var(--muted); background:var(--card); color:var(--ink); min-height:44px; max-height:140px; }
+  button { background:var(--primary); color:#fff; border:0; border-radius:10px; padding:0 18px; font:inherit; cursor:pointer; }
+  button:disabled { opacity:.5; cursor:default; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px; }
+  .chip { background:var(--card); color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:6px 10px; font-size:.85rem; cursor:pointer; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1 id="title">AI Study Helper</h1>
+  <p class="sub" id="sub">Ask about the module. Answers come from the course lessons.</p>
+  <div class="chips" id="chips"></div>
+  <div id="log" role="log" aria-live="polite"></div>
+  <form id="form">
+    <textarea id="q" rows="1" placeholder="Type your question" aria-label="Your question"></textarea>
+    <button id="send" type="submit">Ask</button>
+  </form>
+</div>
+<script>
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const input = document.getElementById("q");
+  const sendBtn = document.getElementById("send");
+  const chips = document.getElementById("chips");
+  const history = [];
+  const moduleKey = new URLSearchParams(location.search).get("module") || "economy";
+  const titles = { "economy": "The Economy", "financial-literacy": "Financial Literacy", "entrepreneurship": "Entrepreneurship" };
+  if (titles[moduleKey]) {
+    document.getElementById("title").textContent = titles[moduleKey] + ": AI Study Helper";
+  }
+
+  const starters = [
+    "What is the difference between direct and indirect tax?",
+    "How does VAT work? Give an example.",
+    "What is the circular flow of the economy?",
+    "Why is zero-rated bread important?"
+  ];
+
+  starters.forEach((text) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = text;
+    b.addEventListener("click", () => ask(text));
+    chips.appendChild(b);
+  });
+
+  function addMsg(text, who, cls) {
+    const d = document.createElement("div");
+    d.className = "msg " + who + (cls ? " " + cls : "");
+    d.textContent = text;
+    log.appendChild(d);
+    log.scrollTop = log.scrollHeight;
+    return d;
+  }
+
+  async function ask(text) {
+    const question = (text ?? input.value).trim();
+    if (!question) return;
+    input.value = "";
+    addMsg(question, "me");
+    const pending = addMsg("Thinking...", "bot");
+    sendBtn.disabled = true;
+    try {
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ module: moduleKey, question, history })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Something went wrong.");
+      pending.textContent = data.answer;
+      history.push({ role: "user", text: question });
+      history.push({ role: "model", text: data.answer });
+    } catch (err) {
+      pending.textContent = err.message;
+      pending.classList.add("err");
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+
+  form.addEventListener("submit", (e) => { e.preventDefault(); ask(); });
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); ask(); }
+  });
+</script>
+</body>
+</html>
