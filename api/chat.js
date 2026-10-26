@@ -6,6 +6,12 @@ const MODEL = "gemini-flash-latest";
 const MAX_QUESTION_CHARS = 500;
 const MAX_HISTORY_TURNS = 6;
 
+// Abuse limits. A whole classroom can share one school IP, so the
+// per-IP limit is set for a class, not for one learner.
+const RATE_WINDOW_MS = 60 * 1000;
+const RATE_MAX_PER_WINDOW = 20;
+const RATE_TABLE_MAX = 5000;
+
 // Each module has its own course text, bundled with the function.
 const MODULES = {
   "economy": { title: "The Economy", lessons: economy },
@@ -36,6 +42,52 @@ const PROMPTS = Object.fromEntries(
   Object.entries(MODULES).map(([key, mod]) => [key, buildPrompt(mod)])
 );
 
+// Per-IP fixed-window counter. Lives in the function instance, so it is
+// a second line of defence behind the Vercel Firewall rate limit rule.
+const hits = new Map();
+
+function clientIp(req) {
+  const real = req.headers["x-real-ip"];
+  if (typeof real === "string" && real) return real.trim();
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd) return fwd.split(",")[0].trim();
+  return "unknown";
+}
+
+function rateLimited(ip, now = Date.now()) {
+  if (hits.size > RATE_TABLE_MAX) {
+    for (const [key, entry] of hits) {
+      if (entry.reset <= now) hits.delete(key);
+    }
+    if (hits.size > RATE_TABLE_MAX) hits.clear();
+  }
+  const entry = hits.get(ip);
+  if (!entry || entry.reset <= now) {
+    hits.set(ip, { count: 1, reset: now + RATE_WINDOW_MS });
+    return { limited: false };
+  }
+  entry.count += 1;
+  if (entry.count > RATE_MAX_PER_WINDOW) {
+    return { limited: true, retryAfter: Math.ceil((entry.reset - now) / 1000) };
+  }
+  return { limited: false };
+}
+
+// The helper page calls /api/chat from its own origin. Browsers always send
+// Origin on a POST, so a missing or foreign Origin means a script or another
+// site. Scripts can fake this header, which is why the rate limit and the
+// Gemini spend cap still matter.
+function sameOrigin(req) {
+  const origin = req.headers["origin"];
+  const host = req.headers["x-forwarded-host"] || req.headers["host"];
+  if (typeof origin !== "string" || typeof host !== "string") return false;
+  try {
+    return new URL(origin).host === host;
+  } catch {
+    return false;
+  }
+}
+
 function sendJson(res, status, body) {
   res.status(status).setHeader("Content-Type", "application/json").send(JSON.stringify(body));
 }
@@ -43,6 +95,18 @@ function sendJson(res, status, body) {
 export default async function handler(req, res) {
   if (req.method !== "POST") {
     return sendJson(res, 405, { error: "Use POST." });
+  }
+
+  if (!sameOrigin(req)) {
+    return sendJson(res, 403, { error: "Open the helper from the course page." });
+  }
+
+  const ip = clientIp(req);
+  const limit = rateLimited(ip);
+  if (limit.limited) {
+    console.warn("Rate limited", ip);
+    res.setHeader("Retry-After", String(limit.retryAfter));
+    return sendJson(res, 429, { error: "Too many questions at once. Wait a minute and try again." });
   }
 
   const apiKey = process.env.GEMINI_API_KEY;
@@ -93,6 +157,9 @@ export default async function handler(req, res) {
     const data = await upstream.json();
     if (!upstream.ok) {
       console.error("Gemini error", upstream.status);
+      if (upstream.status === 429) {
+        return sendJson(res, 503, { error: "The helper has reached its usage limit. Try again later." });
+      }
       return sendJson(res, 502, { error: "The helper is busy. Try again in a moment." });
     }
 
